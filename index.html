@@ -7,35 +7,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- PDF Generation Library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // Firebase Configuration with Safety Checks
-        let firebaseConfig = {};
-        try {
-            if (typeof __firebase_config !== 'undefined') {
-                firebaseConfig = JSON.parse(__firebase_config);
-            }
-        } catch (e) {
-            console.error("Firebase config parsing failed");
-        }
-        
-        // Initialize services only if config is present, otherwise fallback to local-only feel
-        let auth, db;
-        try {
-            const app = initializeApp(firebaseConfig);
-            auth = getAuth(app);
-            db = getFirestore(app);
-        } catch (e) {
-            console.error("Firebase initialization failed:", e);
-        }
-
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'weekly-planner-app';
-
+    <script>
         // State Management
-        let currentUser = null;
         let scheduleData = {}; 
         const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
         const eventTypes = {
@@ -46,90 +19,35 @@
         };
 
         // UI Components
-        const modal = document.getElementById('eventModal');
-        const eventForm = document.getElementById('eventForm');
-        const scheduleGrid = document.getElementById('scheduleGrid');
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        const offlineNotice = document.getElementById('offlineNotice');
+        let modal, eventForm, scheduleGrid, loadingOverlay;
 
-        // Safety Fallback UI
-        setTimeout(() => {
-            if (loadingOverlay && !loadingOverlay.classList.contains('hidden')) {
-                offlineNotice.classList.remove('hidden');
-            }
-        }, 3000);
+        function init() {
+            modal = document.getElementById('eventModal');
+            eventForm = document.getElementById('eventForm');
+            scheduleGrid = document.getElementById('scheduleGrid');
+            loadingOverlay = document.getElementById('loadingOverlay');
 
-        window.continueOffline = () => {
-            loadingOverlay.classList.add('hidden');
+            loadSchedule();
             renderSchedule();
-        };
-
-        async function init() {
-            if (!auth) {
-                window.continueOffline();
-                return;
-            }
-
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Auth failed", error);
-                window.continueOffline();
-            }
+            
+            // Hide loading overlay immediately since we are local
+            if (loadingOverlay) loadingOverlay.classList.add('hidden');
         }
 
-        if (auth) {
-            onAuthStateChanged(auth, (user) => {
-                currentUser = user;
-                if (user) {
-                    setupRealtimeListener();
-                } else {
-                    window.continueOffline();
-                }
-            });
-        }
-
-        function setupRealtimeListener() {
-            if (!currentUser || !db) return;
-            
-            const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'schedule');
-            
-            onSnapshot(docRef, (docSnap) => {
+        function loadSchedule() {
+            const localData = localStorage.getItem('schedulr_data');
+            if (localData) {
                 try {
-                    if (docSnap.exists()) {
-                        scheduleData = docSnap.data().data || {};
-                    } else {
-                        scheduleData = {};
-                    }
-                    renderSchedule();
-                } catch (err) {
-                    console.error("Rendering error:", err);
-                } finally {
-                    loadingOverlay.classList.add('hidden');
+                    scheduleData = JSON.parse(localData);
+                } catch (e) {
+                    console.error("Failed to parse local data", e);
+                    scheduleData = {};
                 }
-            }, (error) => {
-                console.error("Snapshot error:", error);
-                window.continueOffline();
-            });
+            }
         }
 
-        async function saveSchedule() {
-            // Save to LocalStorage as a secondary backup
-            localStorage.setItem('local_schedule_backup', JSON.stringify(scheduleData));
-            
-            if (!currentUser || !db) return;
-            const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'schedule');
-            await setDoc(docRef, { data: scheduleData });
-        }
-
-        // Try to load from localStorage if Firestore fails
-        const localBackup = localStorage.getItem('local_schedule_backup');
-        if (localBackup) {
-            try { scheduleData = JSON.parse(localBackup); } catch(e) {}
+        function saveSchedule() {
+            localStorage.setItem('schedulr_data', JSON.stringify(scheduleData));
         }
 
         function renderSchedule() {
@@ -182,14 +100,14 @@
             eventForm.reset();
         };
 
-        window.deleteEvent = async (day, id) => {
+        window.deleteEvent = (day, id) => {
             if (!scheduleData[day]) return;
             scheduleData[day] = scheduleData[day].filter(e => e.id !== id);
-            await saveSchedule();
-            renderSchedule(); // Immediate UI update
+            saveSchedule();
+            renderSchedule(); 
         };
 
-        eventForm.onsubmit = async (e) => {
+        window.handleFormSubmit = (e) => {
             e.preventDefault();
             const day = document.getElementById('modalDay').value;
             const newEvent = {
@@ -203,8 +121,8 @@
             if (!scheduleData[day]) scheduleData[day] = [];
             scheduleData[day].push(newEvent);
             
-            await saveSchedule();
-            renderSchedule(); // Immediate UI update
+            saveSchedule();
+            renderSchedule(); 
             window.closeModal();
         };
 
@@ -246,19 +164,22 @@
             });
         };
 
-        const toggleDarkMode = () => {
+        window.toggleDarkMode = () => {
             document.documentElement.classList.toggle('dark');
             localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
         };
 
-        if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            document.documentElement.classList.add('dark');
-        }
+        document.addEventListener('DOMContentLoaded', () => {
+            init();
+            
+            if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.classList.add('dark');
+            }
 
-        document.getElementById('darkModeToggle').onclick = toggleDarkMode;
-        document.getElementById('pdfDownloadBtn').onclick = window.downloadPDF;
-
-        window.onload = init;
+            document.getElementById('darkModeToggle').onclick = window.toggleDarkMode;
+            document.getElementById('pdfDownloadBtn').onclick = window.downloadPDF;
+            document.getElementById('eventForm').onsubmit = window.handleFormSubmit;
+        });
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -286,13 +207,7 @@
     <!-- Loading -->
     <div id="loadingOverlay" class="fixed inset-0 bg-white dark:bg-slate-950 z-[100] flex flex-col items-center justify-center gap-4">
         <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-        <p class="text-slate-500 font-medium">Syncing Schedule...</p>
-        <div id="offlineNotice" class="hidden flex flex-col items-center gap-2">
-            <p class="text-xs text-slate-400">Taking longer than usual?</p>
-            <button onclick="window.continueOffline()" class="px-4 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-full text-sm font-medium transition-colors">
-                Continue Offline
-            </button>
-        </div>
+        <p class="text-slate-500 font-medium">Preparing Schedule...</p>
     </div>
 
     <!-- Header -->
