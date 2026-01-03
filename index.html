@@ -12,8 +12,14 @@
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Firebase Configuration
-        const firebaseConfig = JSON.parse(__firebase_config);
+        // Firebase Configuration with Safety Checks
+        let firebaseConfig = {};
+        try {
+            firebaseConfig = JSON.parse(__firebase_config);
+        } catch (e) {
+            console.error("Firebase config missing or invalid");
+        }
+        
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
@@ -36,6 +42,11 @@
         const scheduleGrid = document.getElementById('scheduleGrid');
         const loadingOverlay = document.getElementById('loadingOverlay');
 
+        // Safety Fallback: Always hide loading after 6 seconds
+        setTimeout(() => {
+            if (loadingOverlay) loadingOverlay.classList.add('hidden');
+        }, 6000);
+
         async function init() {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -54,20 +65,30 @@
             if (user) {
                 setupRealtimeListener();
             } else {
+                // If auth is checked and no user, we still need to let them use the app (anonymously or otherwise)
                 loadingOverlay.classList.add('hidden');
             }
         });
 
         function setupRealtimeListener() {
+            if (!currentUser) return;
+            
             const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'schedule');
+            
+            // onSnapshot will fire immediately with current data (or null if it doesn't exist)
             onSnapshot(docRef, (docSnap) => {
-                if (docSnap.exists()) {
-                    scheduleData = docSnap.data().data || {};
-                } else {
-                    scheduleData = {};
+                try {
+                    if (docSnap.exists()) {
+                        scheduleData = docSnap.data().data || {};
+                    } else {
+                        scheduleData = {};
+                    }
+                    renderSchedule();
+                } catch (err) {
+                    console.error("Rendering error:", err);
+                } finally {
+                    loadingOverlay.classList.add('hidden');
                 }
-                renderSchedule();
-                loadingOverlay.classList.add('hidden');
             }, (error) => {
                 console.error("Snapshot error:", error);
                 loadingOverlay.classList.add('hidden');
@@ -81,18 +102,21 @@
         }
 
         function renderSchedule() {
+            if (!scheduleGrid) return;
             scheduleGrid.innerHTML = '';
             
             days.forEach(day => {
                 const dayColumn = document.createElement('div');
                 dayColumn.className = "flex flex-col gap-3 min-w-[220px] flex-1 day-column";
                 
-                let dayEventsHtml = (scheduleData[day] || [])
-                    .sort((a, b) => a.start.localeCompare(b.start))
+                const events = Array.isArray(scheduleData[day]) ? scheduleData[day] : [];
+                
+                let dayEventsHtml = events
+                    .sort((a, b) => (a.start || "").localeCompare(b.start || ""))
                     .map(event => `
                     <div class="group relative p-3 border-l-4 rounded-r shadow-sm transition-all hover:shadow-md ${eventTypes[event.type] || eventTypes.other}">
-                        <div class="text-[10px] font-bold uppercase tracking-wider opacity-70">${event.start} - ${event.end}</div>
-                        <div class="font-semibold text-sm truncate">${event.title}</div>
+                        <div class="text-[10px] font-bold uppercase tracking-wider opacity-70">${event.start || '??'} - ${event.end || '??'}</div>
+                        <div class="font-semibold text-sm truncate">${event.title || 'Untitled'}</div>
                         <button onclick="window.deleteEvent('${day}', '${event.id}')" class="delete-btn absolute top-1 right-1 opacity-0 group-hover:opacity-100 p-1 hover:bg-black/10 rounded transition-opacity">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                         </button>
@@ -128,6 +152,7 @@
         };
 
         window.deleteEvent = async (day, id) => {
+            if (!scheduleData[day]) return;
             scheduleData[day] = scheduleData[day].filter(e => e.id !== id);
             await saveSchedule();
         };
@@ -155,11 +180,9 @@
             const grid = document.getElementById('scheduleGrid');
             const isDark = document.documentElement.classList.contains('dark');
             
-            // Hide non-print elements
             const buttons = document.querySelectorAll('.add-btn, .delete-btn, .empty-placeholder');
             buttons.forEach(b => b.style.display = 'none');
 
-            // Force the grid to expand fully for capture (prevents horizontal clipping)
             const originalOverflow = grid.style.overflowX;
             const originalWidth = grid.style.width;
             grid.style.overflowX = 'visible';
@@ -180,7 +203,6 @@
             };
 
             html2pdf().set(opt).from(grid).save().then(() => {
-                // Restore styles
                 grid.style.overflowX = originalOverflow;
                 grid.style.width = originalWidth;
                 buttons.forEach(b => b.style.display = '');
@@ -219,7 +241,6 @@
             .no-print { display: none !important; }
         }
         
-        /* Animation for modal */
         @keyframes scaleIn {
             from { transform: scale(0.95); opacity: 0; }
             to { transform: scale(1); opacity: 1; }
