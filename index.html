@@ -15,14 +15,23 @@
         // Firebase Configuration with Safety Checks
         let firebaseConfig = {};
         try {
-            firebaseConfig = JSON.parse(__firebase_config);
+            if (typeof __firebase_config !== 'undefined') {
+                firebaseConfig = JSON.parse(__firebase_config);
+            }
         } catch (e) {
-            console.error("Firebase config missing or invalid");
+            console.error("Firebase config parsing failed");
         }
         
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        // Initialize services only if config is present, otherwise fallback to local-only feel
+        let auth, db;
+        try {
+            const app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } catch (e) {
+            console.error("Firebase initialization failed:", e);
+        }
+
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'weekly-planner-app';
 
         // State Management
@@ -41,13 +50,26 @@
         const eventForm = document.getElementById('eventForm');
         const scheduleGrid = document.getElementById('scheduleGrid');
         const loadingOverlay = document.getElementById('loadingOverlay');
+        const offlineNotice = document.getElementById('offlineNotice');
 
-        // Safety Fallback: Always hide loading after 6 seconds
+        // Safety Fallback UI
         setTimeout(() => {
-            if (loadingOverlay) loadingOverlay.classList.add('hidden');
-        }, 6000);
+            if (loadingOverlay && !loadingOverlay.classList.contains('hidden')) {
+                offlineNotice.classList.remove('hidden');
+            }
+        }, 3000);
+
+        window.continueOffline = () => {
+            loadingOverlay.classList.add('hidden');
+            renderSchedule();
+        };
 
         async function init() {
+            if (!auth) {
+                window.continueOffline();
+                return;
+            }
+
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -56,26 +78,26 @@
                 }
             } catch (error) {
                 console.error("Auth failed", error);
-                loadingOverlay.classList.add('hidden');
+                window.continueOffline();
             }
         }
 
-        onAuthStateChanged(auth, (user) => {
-            currentUser = user;
-            if (user) {
-                setupRealtimeListener();
-            } else {
-                // If auth is checked and no user, we still need to let them use the app (anonymously or otherwise)
-                loadingOverlay.classList.add('hidden');
-            }
-        });
+        if (auth) {
+            onAuthStateChanged(auth, (user) => {
+                currentUser = user;
+                if (user) {
+                    setupRealtimeListener();
+                } else {
+                    window.continueOffline();
+                }
+            });
+        }
 
         function setupRealtimeListener() {
-            if (!currentUser) return;
+            if (!currentUser || !db) return;
             
             const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'schedule');
             
-            // onSnapshot will fire immediately with current data (or null if it doesn't exist)
             onSnapshot(docRef, (docSnap) => {
                 try {
                     if (docSnap.exists()) {
@@ -91,14 +113,23 @@
                 }
             }, (error) => {
                 console.error("Snapshot error:", error);
-                loadingOverlay.classList.add('hidden');
+                window.continueOffline();
             });
         }
 
         async function saveSchedule() {
-            if (!currentUser) return;
+            // Save to LocalStorage as a secondary backup
+            localStorage.setItem('local_schedule_backup', JSON.stringify(scheduleData));
+            
+            if (!currentUser || !db) return;
             const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'schedule');
             await setDoc(docRef, { data: scheduleData });
+        }
+
+        // Try to load from localStorage if Firestore fails
+        const localBackup = localStorage.getItem('local_schedule_backup');
+        if (localBackup) {
+            try { scheduleData = JSON.parse(localBackup); } catch(e) {}
         }
 
         function renderSchedule() {
@@ -155,6 +186,7 @@
             if (!scheduleData[day]) return;
             scheduleData[day] = scheduleData[day].filter(e => e.id !== id);
             await saveSchedule();
+            renderSchedule(); // Immediate UI update
         };
 
         eventForm.onsubmit = async (e) => {
@@ -172,10 +204,10 @@
             scheduleData[day].push(newEvent);
             
             await saveSchedule();
+            renderSchedule(); // Immediate UI update
             window.closeModal();
         };
 
-        // PDF Generation - Improved for Chrome
         window.downloadPDF = () => {
             const grid = document.getElementById('scheduleGrid');
             const isDark = document.documentElement.classList.contains('dark');
@@ -214,7 +246,6 @@
             });
         };
 
-        // Dark mode logic
         const toggleDarkMode = () => {
             document.documentElement.classList.toggle('dark');
             localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
@@ -256,6 +287,12 @@
     <div id="loadingOverlay" class="fixed inset-0 bg-white dark:bg-slate-950 z-[100] flex flex-col items-center justify-center gap-4">
         <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
         <p class="text-slate-500 font-medium">Syncing Schedule...</p>
+        <div id="offlineNotice" class="hidden flex flex-col items-center gap-2">
+            <p class="text-xs text-slate-400">Taking longer than usual?</p>
+            <button onclick="window.continueOffline()" class="px-4 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-full text-sm font-medium transition-colors">
+                Continue Offline
+            </button>
+        </div>
     </div>
 
     <!-- Header -->
@@ -283,7 +320,6 @@
 
     <!-- Main Content -->
     <main class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <!-- Week Navigator -->
         <div class="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4 no-print">
             <div>
                 <h2 class="text-3xl font-bold">Weekly Planner</h2>
