@@ -45,6 +45,7 @@
                 }
             } catch (error) {
                 console.error("Auth failed", error);
+                loadingOverlay.classList.add('hidden');
             }
         }
 
@@ -52,6 +53,8 @@
             currentUser = user;
             if (user) {
                 setupRealtimeListener();
+            } else {
+                loadingOverlay.classList.add('hidden');
             }
         });
 
@@ -147,30 +150,44 @@
             window.closeModal();
         };
 
-        // PDF Generation
+        // PDF Generation - Improved for Chrome
         window.downloadPDF = () => {
-            const element = document.getElementById('scheduleGrid');
-            
-            // Temporary styling for PDF
+            const grid = document.getElementById('scheduleGrid');
             const isDark = document.documentElement.classList.contains('dark');
+            
+            // Hide non-print elements
+            const buttons = document.querySelectorAll('.add-btn, .delete-btn, .empty-placeholder');
+            buttons.forEach(b => b.style.display = 'none');
+
+            // Force the grid to expand fully for capture (prevents horizontal clipping)
+            const originalOverflow = grid.style.overflowX;
+            const originalWidth = grid.style.width;
+            grid.style.overflowX = 'visible';
+            grid.style.width = 'fit-content';
+
             const opt = {
-                margin: [0.5, 0.5],
+                margin: 0.2,
                 filename: 'Weekly_Schedule.pdf',
                 image: { type: 'jpeg', quality: 0.98 },
                 html2canvas: { 
                     scale: 2, 
                     useCORS: true,
-                    backgroundColor: isDark ? '#0f172a' : '#ffffff' 
+                    backgroundColor: isDark ? '#0f172a' : '#ffffff',
+                    logging: false,
+                    letterRendering: true
                 },
-                jsPDF: { unit: 'in', format: 'letter', orientation: 'landscape' }
+                jsPDF: { unit: 'in', format: 'a3', orientation: 'landscape' }
             };
 
-            // Hide UI elements during capture
-            const buttons = document.querySelectorAll('.add-btn, .delete-btn, .empty-placeholder');
-            buttons.forEach(b => b.style.display = 'none');
-
-            html2pdf().set(opt).from(element).save().then(() => {
-                // Restore UI elements
+            html2pdf().set(opt).from(grid).save().then(() => {
+                // Restore styles
+                grid.style.overflowX = originalOverflow;
+                grid.style.width = originalWidth;
+                buttons.forEach(b => b.style.display = '');
+            }).catch(err => {
+                console.error("PDF Export Error:", err);
+                grid.style.overflowX = originalOverflow;
+                grid.style.width = originalWidth;
                 buttons.forEach(b => b.style.display = '');
             });
         };
@@ -200,6 +217,15 @@
         
         @media print {
             .no-print { display: none !important; }
+        }
+        
+        /* Animation for modal */
+        @keyframes scaleIn {
+            from { transform: scale(0.95); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        .scale-in-center {
+            animation: scaleIn 0.2s ease-out forwards;
         }
     </style>
 </head>
@@ -259,7 +285,7 @@
 
     <!-- Modal -->
     <div id="eventModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
-        <div class="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+        <div class="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden scale-in-center">
             <div class="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
                 <h3 id="modalTitle" class="text-xl font-bold">Add Event</h3>
                 <button onclick="window.closeModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
