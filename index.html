@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schedulr - Full Week Planner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PDF Generation Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Configuration
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'weekly-planner-app';
+
+        // State Management
+        let currentUser = null;
+        let scheduleData = {}; 
+        const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+        const eventTypes = {
+            study: "bg-blue-100 border-blue-500 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+            college: "bg-purple-100 border-purple-500 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300",
+            break: "bg-green-100 border-green-500 text-green-700 dark:bg-green-900/30 dark:text-green-300",
+            other: "bg-gray-100 border-gray-500 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+        };
+
+        // UI Components
+        const modal = document.getElementById('eventModal');
+        const eventForm = document.getElementById('eventForm');
+        const scheduleGrid = document.getElementById('scheduleGrid');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+
+        async function init() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth failed", error);
+            }
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (user) {
+                setupRealtimeListener();
+            }
+        });
+
+        function setupRealtimeListener() {
+            const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'schedule');
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    scheduleData = docSnap.data().data || {};
+                } else {
+                    scheduleData = {};
+                }
+                renderSchedule();
+                loadingOverlay.classList.add('hidden');
+            }, (error) => {
+                console.error("Snapshot error:", error);
+                loadingOverlay.classList.add('hidden');
+            });
+        }
+
+        async function saveSchedule() {
+            if (!currentUser) return;
+            const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'schedule');
+            await setDoc(docRef, { data: scheduleData });
+        }
+
+        function renderSchedule() {
+            scheduleGrid.innerHTML = '';
+            
+            days.forEach(day => {
+                const dayColumn = document.createElement('div');
+                dayColumn.className = "flex flex-col gap-3 min-w-[220px] flex-1 day-column";
+                
+                let dayEventsHtml = (scheduleData[day] || [])
+                    .sort((a, b) => a.start.localeCompare(b.start))
+                    .map(event => `
+                    <div class="group relative p-3 border-l-4 rounded-r shadow-sm transition-all hover:shadow-md ${eventTypes[event.type] || eventTypes.other}">
+                        <div class="text-[10px] font-bold uppercase tracking-wider opacity-70">${event.start} - ${event.end}</div>
+                        <div class="font-semibold text-sm truncate">${event.title}</div>
+                        <button onclick="window.deleteEvent('${day}', '${event.id}')" class="delete-btn absolute top-1 right-1 opacity-0 group-hover:opacity-100 p-1 hover:bg-black/10 rounded transition-opacity">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </button>
+                    </div>
+                `).join('');
+
+                dayColumn.innerHTML = `
+                    <div class="flex items-center justify-between border-b pb-2 mb-2 sticky top-0 bg-white dark:bg-slate-900 z-10 day-header">
+                        <h3 class="font-bold text-base text-slate-800 dark:text-white">${day}</h3>
+                        <button onclick="window.openModal('${day}')" class="add-btn text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 p-1 rounded-full transition-colors">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                        </button>
+                    </div>
+                    <div class="flex flex-col gap-3">
+                        ${dayEventsHtml || '<div class="text-xs text-slate-400 italic py-4 text-center border-2 border-dashed rounded-lg border-slate-100 dark:border-slate-800 empty-placeholder">No events</div>'}
+                    </div>
+                `;
+                scheduleGrid.appendChild(dayColumn);
+            });
+        }
+
+        window.openModal = (day) => {
+            document.getElementById('modalDay').value = day;
+            document.getElementById('modalTitle').innerText = `Add to ${day}`;
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        };
+
+        window.closeModal = () => {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            eventForm.reset();
+        };
+
+        window.deleteEvent = async (day, id) => {
+            scheduleData[day] = scheduleData[day].filter(e => e.id !== id);
+            await saveSchedule();
+        };
+
+        eventForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const day = document.getElementById('modalDay').value;
+            const newEvent = {
+                id: crypto.randomUUID(),
+                title: document.getElementById('title').value,
+                start: document.getElementById('start').value,
+                end: document.getElementById('end').value,
+                type: document.getElementById('type').value
+            };
+
+            if (!scheduleData[day]) scheduleData[day] = [];
+            scheduleData[day].push(newEvent);
+            
+            await saveSchedule();
+            window.closeModal();
+        };
+
+        // PDF Generation
+        window.downloadPDF = () => {
+            const element = document.getElementById('scheduleGrid');
+            
+            // Temporary styling for PDF
+            const isDark = document.documentElement.classList.contains('dark');
+            const opt = {
+                margin: [0.5, 0.5],
+                filename: 'Weekly_Schedule.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { 
+                    scale: 2, 
+                    useCORS: true,
+                    backgroundColor: isDark ? '#0f172a' : '#ffffff' 
+                },
+                jsPDF: { unit: 'in', format: 'letter', orientation: 'landscape' }
+            };
+
+            // Hide UI elements during capture
+            const buttons = document.querySelectorAll('.add-btn, .delete-btn, .empty-placeholder');
+            buttons.forEach(b => b.style.display = 'none');
+
+            html2pdf().set(opt).from(element).save().then(() => {
+                // Restore UI elements
+                buttons.forEach(b => b.style.display = '');
+            });
+        };
+
+        // Dark mode logic
+        const toggleDarkMode = () => {
+            document.documentElement.classList.toggle('dark');
+            localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light');
+        };
+
+        if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        }
+
+        document.getElementById('darkModeToggle').onclick = toggleDarkMode;
+        document.getElementById('pdfDownloadBtn').onclick = window.downloadPDF;
+
+        window.onload = init;
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .dark .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; }
+        
+        @media print {
+            .no-print { display: none !important; }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen transition-colors duration-200">
+
+    <!-- Loading -->
+    <div id="loadingOverlay" class="fixed inset-0 bg-white dark:bg-slate-950 z-[100] flex flex-col items-center justify-center gap-4">
+        <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+        <p class="text-slate-500 font-medium">Syncing Schedule...</p>
+    </div>
+
+    <!-- Header -->
+    <header class="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 no-print">
+        <div class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <div class="bg-blue-600 text-white p-2 rounded-lg">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                </div>
+                <h1 class="text-xl font-bold tracking-tight">Schedulr</h1>
+            </div>
+            
+            <div class="flex items-center gap-3">
+                <button id="pdfDownloadBtn" class="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg transition-all shadow-lg shadow-emerald-500/20">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    Download PDF
+                </button>
+                <button id="darkModeToggle" class="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
+                    <svg class="w-5 h-5 block dark:hidden" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
+                    <svg class="w-5 h-5 hidden dark:block" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.464 5.05l-.707-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" clip-rule="evenodd"></path></svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Week Navigator -->
+        <div class="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4 no-print">
+            <div>
+                <h2 class="text-3xl font-bold">Weekly Planner</h2>
+                <p class="text-slate-500 dark:text-slate-400">Your complete 7-day schedule at a glance.</p>
+            </div>
+            <div class="flex gap-4 text-xs font-semibold">
+                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-blue-500"></span> Study</span>
+                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-purple-500"></span> College</span>
+                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-green-500"></span> Break</span>
+            </div>
+        </div>
+
+        <!-- Timetable Grid -->
+        <div class="bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-slate-200 dark:border-slate-800 overflow-hidden transition-all">
+            <div id="scheduleGrid" class="flex flex-row overflow-x-auto p-6 gap-5 custom-scrollbar min-h-[600px] bg-white dark:bg-slate-900">
+                <!-- Day columns will be injected here -->
+            </div>
+        </div>
+    </main>
+
+    <!-- Modal -->
+    <div id="eventModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+        <div class="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+            <div class="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+                <h3 id="modalTitle" class="text-xl font-bold">Add Event</h3>
+                <button onclick="window.closeModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <form id="eventForm" class="p-6 space-y-4">
+                <input type="hidden" id="modalDay">
+                
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Event Title</label>
+                    <input type="text" id="title" required placeholder="e.g. Data Structures" 
+                        class="w-full px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all">
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Start Time</label>
+                        <input type="time" id="start" required 
+                            class="w-full px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">End Time</label>
+                        <input type="time" id="end" required 
+                            class="w-full px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Category</label>
+                    <select id="type" required 
+                        class="w-full px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all">
+                        <option value="college">College</option>
+                        <option value="study">Study Slot</option>
+                        <option value="break">Break</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+
+                <div class="pt-4 flex gap-3">
+                    <button type="button" onclick="window.closeModal()" 
+                        class="flex-1 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 font-medium transition-colors">
+                        Cancel
+                    </button>
+                    <button type="submit" 
+                        class="flex-1 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium transition-colors shadow-lg shadow-blue-500/30">
+                        Save Event
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+</body>
+</html>
